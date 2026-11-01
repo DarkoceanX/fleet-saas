@@ -17,7 +17,7 @@
     "build": "npm run build -w @fleet/shared && npm run build -w @fleet/api && npm run build -w @fleet/web",
     "typecheck": "npm run build -w @fleet/shared && npm run typecheck --workspaces --if-present && tsc -p tsconfig.tools.json",
     "lint": "eslint apps packages tests-app scripts/*.mjs",
-    "test": "npm run build -w @fleet/shared && tsx --test tests-app/costing.test.ts tests-app/operations.test.ts tests-app/period.test.ts tests-app/income.test.ts",
+    "test": "npm run build -w @fleet/shared && tsx --test tests-app/costing.test.ts tests-app/operations.test.ts tests-app/period.test.ts tests-app/income.test.ts tests-app/period-pagination.test.ts",
     "test:integration": "npm run build -w @fleet/shared && npm run build -w @fleet/api && tsx --test tests-app/*integration.test.ts",
     "test:period:browser": "node scripts/test-period-browser.mjs",
     "db:migrate": "tsx scripts/database.ts migrate",
