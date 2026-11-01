@@ -1,0 +1,96 @@
+# Контракт API Fleet — этапы 1 и 2
+
+База /api/v1. JSON, деньги строками; даты YYYY-MM-DD, instants UTC.
+Сессия в HttpOnly cookie fleet_session. Каждый защищённый запрос получает
+tenant и актуальную роль из sessions → memberships. tenant_id от клиента запрещён.
+Для POST/PATCH необходим Origin, равный APP_BASE_URL; CORS для внешних сайтов не включён.
+
+| Метод и путь | Назначение | Роли |
+|---|---|---|
+| GET /health | Готовность БД | без входа |
+| POST /auth/login | email, password → пользователь; устанавливает cookie | без входа |
+| GET /auth/me | Пользователь, организация, роль | все |
+| POST /auth/logout | Отозвать сессию | все |
+| GET /vehicles, /vehicles/:id | Список / машина | все |
+| POST /vehicles | name, plate | owner, dispatcher |
+| PATCH /vehicles/:id | name, plate, version | owner, dispatcher |
+| GET /trips, /trips/:id | Список / рейс, без финансов | все |
+| POST /trips | vehicle_id, origin, destination, departure_date | owner, dispatcher |
+| PATCH /trips/:id | Те же поля + version | owner, dispatcher |
+| GET /trips/:id/estimates | Сохранённые планы, входы и результат | owner, accountant |
+| POST /trips/:id/estimates | Входы из COST_CALCULATION.md | owner, accountant |
+
+Списки: limit 1..100 (по умолчанию 20), offset 0..1000000; ответ items, has_more.
+Сортировка created_at DESC, id DESC. Все неизвестные поля тела и параметры списка
+отвергаются. Поля name/plate/маршрута ограничены по длине.
+
+Создания машины, рейса и расчёта требуют Idempotency-Key UUID. Область ключа:
+организация + пользователь + операция. Повтор с теми же нормализованными данными
+возвращает прежний ответ 201; другое тело — 409. Сохранение ключа, записи и audit
+в одной транзакции. Ключи пока не очищаются автоматически.
+
+PATCH требует текущую version, блокирует запись в транзакции, увеличивает version.
+Устаревшая version — 409. Чужая/несуществующая сущность — 404, независимо от её наличия.
+Нет DELETE для истории расчётов и нет API изменения ролей/организации.
+
+Ошибки: `{ "error": { "message": "...", "fields": { "поле": "..." } } }`.
+400 — валидация, 401 — нет сессии, 403 — роль/Origin, 404 — недоступный ID,
+409 — конфликт версии/уникальности/повтора, 429 — лимит входа, 500 — общая ошибка.
+Валидация выполняется до обращения к ID, поэтому некорректный запрос может дать 400.
+Каждая бизнес-запись пишет audit_events без паролей и сырых финансовых входов.
+
+
+## Расширение второго этапа
+
+| Метод и путь | Назначение | Роли |
+|---|---|---|
+| GET /drivers, /drivers/:id | Водители организации | все |
+| POST /drivers | name, staff_code; активен по умолчанию | owner, dispatcher |
+| PATCH /drivers/:id | name, staff_code, active, version | owner, dispatcher |
+| PATCH /trips/:id/assignment | vehicle_id, driver_id (UUID или null), version | owner, dispatcher |
+| POST /trips/:id/status | status, version, reason (обязательно для cancelled) | owner, dispatcher |
+| GET /trips/:id/status-history | История переходов | все |
+| GET /trips/:id/expenses | Расходы, включая аннулированные | owner, accountant |
+| POST /trips/:id/expenses | category, amount, currency, incurred_on, note | owner, accountant |
+| GET /expenses/:id | Расход | owner, accountant |
+| POST /expenses/:id/void | version, reason; исходная сумма сохраняется | owner, accountant |
+| GET /trips/:id/comparison | План/факт по всем расходам рейса, независимо от страницы | owner, accountant |
+
+Все новые POST требуют Idempotency-Key UUID; логин/выход по-прежнему исключение.
+PATCH назначения поддерживает version. POST статуса и аннулирования поддерживает
+и version, и безопасный повтор тем же ключом/телом.
+
+POST/PATCH /trips также принимает driver_id (необязательный). При PATCH без него
+сохраняется прежнее назначение. Смена ресурсов/маршрута разрешена только draft/planned.
+POST плана разрешён только draft/planned. Новые снимки включают assignment_version
+и assignment_snapshot (машина, водитель, маршрут, дата на момент расчёта).
+У снимков первого этапа эти поля null; миграция не придумывает старое назначение.
+
+Расход: amount — положительная десятичная строка, до 12 целых и 2 дробных цифр;
+лишняя точность отклоняется. currency = RUB; incurred_on — YYYY-MM-DD; note — 3..500
+символов. Категории: fuel, driver, maintenance, depreciation, tolls, other_direct,
+overhead. Аннулирование требует reason 3..500 символов. DELETE и перезаписи суммы нет.
+
+Сравнение возвращает plan_id, plan_mode (latest/frozen), plan_total, actual_total,
+variance, variance_percent, rows по категориям, entry_count и has_actual.
+Суммы и проценты — строки, отсутствующие величины — null. Положительное variance
+означает превышение плана. Процент = (факт − план) / план × 100, HALF_UP до 0.01.
+Нулевой план даёт null процента. Факт — сумма неаннулированных записей без
+автоматических начислений. Без записей actual_total и variance равны null.
+Для категории без записей её actual и variance также null, даже если другие
+категории уже заполнены. Общий факт всегда показывает только внесённую часть затрат.
+
+На in_progress фиксируется ID последнего плана текущей редакции назначения;
+если его нет, ID остаётся null. Во время выполнения и после завершения сравнение
+использует только этот зафиксированный план. Статусы не изменяют редакцию назначения.
+
+Подробные правила и границы: [SECOND_SLICE.md](SECOND_SLICE.md).
+
+## Эксплуатация техники за период
+
+Добавлены `/api/v1/vehicles/:vehicleId/period` и POST-команды показаний,
+ручных затрат, признания рейсовых источников и проверки полноты. Все команды
+доступны owner/accountant, требуют Idempotency-Key и проверяют tenant; изменения
+требуют version. Полный контракт: [VEHICLE_PERIOD](VEHICLE_PERIOD.md).
+Фактические доходы рейса/машины и отдельный результат реализованы:
+[контракт доходов](RECOGNIZED_INCOME.md). Плановые значения не импортируются в факт.

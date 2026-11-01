@@ -1,0 +1,36 @@
+{
+  "name": "fleet-saas",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "overrides": {
+    "multer": "2.5.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "npm run build -w @fleet/shared && npm run build -w @fleet/api && npm run build -w @fleet/web",
+    "typecheck": "npm run build -w @fleet/shared && npm run typecheck --workspaces --if-present && tsc -p tsconfig.tools.json",
+    "lint": "eslint apps packages tests-app scripts/*.mjs",
+    "test": "npm run build -w @fleet/shared && tsx --test tests-app/costing.test.ts tests-app/operations.test.ts tests-app/period.test.ts tests-app/income.test.ts",
+    "test:integration": "npm run build -w @fleet/shared && npm run build -w @fleet/api && tsx --test tests-app/*integration.test.ts",
+    "test:period:browser": "node scripts/test-period-browser.mjs",
+    "db:migrate": "tsx scripts/database.ts migrate",
+    "db:seed": "tsx scripts/database.ts seed"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@nestjs/platform-express": "^11.2.8",
+    "@types/node": "^24.0.0",
+    "eslint": "^9.39.0",
+    "prettier": "^3.9.10",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.0"
+  }
+}

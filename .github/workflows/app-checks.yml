@@ -1,0 +1,48 @@
+name: Application checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  app:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: fleet_ci
+          POSTGRES_PASSWORD: synthetic_ci_only
+          POSTGRES_DB: fleet_period_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U fleet_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://fleet_ci:synthetic_ci_only@localhost:5432/fleet_period_test
+      PERIOD_TEST_DATABASE_URL: postgresql://fleet_ci:synthetic_ci_only@localhost:5432/fleet_period_test
+      SESSION_SECRET: synthetic-ci-session-secret-at-least-32-characters
+      APP_BASE_URL: http://localhost:3000
+      APP_ENV: development
+      DEMO_PASSWORD: SyntheticCiOnly123!
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run db:migrate
+      - run: npm run db:migrate
+      - run: npm run db:seed
+      - run: npm run test:integration
+      - run: CHROME_BIN="$(command -v google-chrome)" npm run test:period:browser
+      - run: npm run build

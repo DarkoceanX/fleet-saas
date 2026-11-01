@@ -1,0 +1,47 @@
+# Local secrets (keep examples)
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+
+# Dependencies, builds and reports
+node_modules/
+.next/
+*.tsbuildinfo
+dist/
+build/
+coverage/
+playwright-report/
+test-results/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.log
+
+# Local data and scratch space
+work/
+tmp/
+data-local/
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.bak
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Codex runtime data; keep shared config and all repo skills
+.codex/auth.json
+.codex/sessions/
+.codex/log/
+.codex/history.jsonl
+.codex/*.sqlite*

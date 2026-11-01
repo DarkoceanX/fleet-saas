@@ -1,0 +1,8 @@
+# Project defaults. Codex loads project config for trusted projects.
+# Keep the account's selected model; no hardcoded model or paid service tier.
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+web_search = "cached"
+
+[sandbox_workspace_write]
+network_access = false

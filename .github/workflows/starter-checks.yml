@@ -1,0 +1,24 @@
+name: Starter checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  starter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check Python runtime
+        run: python3 -c "import sys; assert sys.version_info >= (3, 11)"
+      - name: Validate starter structure and configuration
+        run: python3 scripts/check_starter.py
+      - name: Test trip calculation
+        run: python3 -m unittest discover -s tests -v
+      - name: Run example
+        run: python3 scripts/calculate_trip.py examples/trip-cost.json

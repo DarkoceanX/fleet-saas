@@ -1,0 +1,16 @@
+{
+  "currency": "RUB",
+  "loaded_km": "500",
+  "empty_km": "100",
+  "fuel_l_per_100km": "30",
+  "fuel_price_per_l": "60",
+  "driver_hours": "12",
+  "driver_rate_per_hour": "400",
+  "maintenance_per_km": "4",
+  "depreciation_per_km": "3",
+  "tolls": "1500",
+  "other_direct": "500",
+  "overhead_rate": "0.10",
+  "target_margin": "0.20",
+  "revenue": "30000"
+}
