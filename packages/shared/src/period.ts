@@ -57,6 +57,58 @@ export const periodRangeSchema = z
     (v) => v.start_date <= v.end_date && v.end_date < "9999-12-31",
     "Проверьте границы периода; нужен следующий день после конца",
   );
+const queryInteger = (min: number, max: number) =>
+  z
+    .string()
+    .regex(/^(0|[1-9]\d*)$/)
+    .transform(Number)
+    .pipe(z.number().int().min(min).max(max));
+export const periodReportQuerySchema = z
+  .object({
+    ...periodRangeSchema.shape,
+    page_size: queryInteger(1, 100).optional(),
+  })
+  .strict()
+  .refine(
+    (v) => v.start_date <= v.end_date && v.end_date < "9999-12-31",
+    "Проверьте границы периода",
+  );
+export const periodEntriesQuerySchema = z
+  .object({
+    ...periodRangeSchema.shape,
+    kind: z.enum(["costs", "income"]),
+    limit: queryInteger(1, 100).default(20),
+    offset: queryInteger(0, 1000000).default(0),
+    expected_revision: queryInteger(0, 2147483647),
+  })
+  .strict()
+  .refine(
+    (v) => v.start_date <= v.end_date && v.end_date < "9999-12-31",
+    "Проверьте границы периода",
+  );
+export type PeriodPageInfo = {
+  total: number;
+  next_offset: number | null;
+  revision: number;
+};
+export type PeriodPage<T> = PeriodPageInfo & { items: T[] };
+// Input is the full, deterministically ordered collection for one locked revision.
+// Pagination never participates in calculating money or completeness.
+export function periodPage<T>(
+  rows: T[],
+  limit: number,
+  offset: number,
+  revision: number,
+): PeriodPage<T> {
+  const items = rows.slice(offset, offset + limit);
+  return {
+    items,
+    total: rows.length,
+    next_offset:
+      offset + items.length < rows.length ? offset + items.length : null,
+    revision,
+  };
+}
 export const versionSchema = z
   .object({ version: z.number().int().positive() })
   .strict();

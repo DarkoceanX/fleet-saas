@@ -26,12 +26,21 @@ export function IncomePanel({
   tripId,
   range,
   onChange,
+  onMutationStart,
+  pagination,
 }: {
   data: IncomeWorkspace;
   vehicleId: string;
   tripId?: string;
   range?: { start_date: string; end_date: string };
   onChange: () => Promise<void>;
+  onMutationStart?: () => void;
+  pagination?: {
+    total: number;
+    more: boolean;
+    busy: boolean;
+    load: () => Promise<void>;
+  };
 }) {
   const [draft, setDraft] = useState<Draft | null>(null),
     [busy, setBusy] = useState(false),
@@ -76,6 +85,7 @@ export function IncomePanel({
     }
   }
   async function send(path: string, body: unknown, key?: string) {
+    onMutationStart?.();
     const encoded = JSON.stringify(body),
       fingerprint = path + encoded;
     if (retry.current?.body !== fingerprint)
@@ -175,7 +185,7 @@ export function IncomePanel({
           </thead>
           <tbody>
             {data.entries.map((e) => (
-              <tr key={e.id}>
+              <tr key={e.id} data-testid="income-row">
                 <td>
                   {e.recognized_on}
                   <br />
@@ -227,6 +237,21 @@ export function IncomePanel({
           </tbody>
         </table>
       </div>
+      {pagination && (
+        <p>
+          Показано доходов: {data.entries.length} из {pagination.total}. Итоги и
+          полнота — за весь период.
+        </p>
+      )}
+      {pagination?.more && (
+        <button
+          type="button"
+          disabled={busy || pagination.busy}
+          onClick={() => void pagination.load()}
+        >
+          Загрузить ещё доходы
+        </button>
+      )}
       {draft && (
         <form
           aria-label="Редактор дохода"

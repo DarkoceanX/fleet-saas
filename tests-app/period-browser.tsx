@@ -9,6 +9,7 @@ import {
 } from "@fleet/shared";
 import { PeriodPanel } from "../apps/web/app/period-ui";
 import { runExpenseRegressions } from "./expense-ui-regressions";
+import { runPaginationRegressions } from "./period-pagination-browser";
 
 // Real React + browser DOM; only transport is synthetic. No backend or user database.
 const root = createRoot(document.getElementById("root")!);
@@ -403,6 +404,9 @@ async function run() {
   root.unmount();
   const regressions = await runExpenseRegressions();
   passed.push(...regressions.passed);
+  const pagination = await runPaginationRegressions();
+  passed.push(...pagination.passed);
+  regressions.failed.push(...pagination.failed);
   const output = document.getElementById("result")!;
   output.dataset.status = regressions.failed.length ? "failed" : "passed";
   output.textContent = JSON.stringify({

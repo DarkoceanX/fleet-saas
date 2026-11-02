@@ -10,6 +10,20 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILLS = {'fleet-plan', 'fleet-api', 'fleet-ui', 'fleet-data', 'fleet-costing', 'fleet-release'}
 
 
+def check_skills(root):
+    errors = []
+    paths = list((root / '.agents/skills').glob('*/SKILL.md'))
+    missing = SKILLS - {p.parent.name for p in paths}
+    if missing:
+        errors.append(f'Missing required Fleet skills: {", ".join(sorted(missing))}')
+    for path in paths:
+        content = path.read_text(encoding='utf-8')
+        match = re.match(r'^---\nname: ([a-z0-9-]+)\ndescription: ([^\n]+)\n---\n', content)
+        if not match or match[1] != path.parent.name or not match[2].strip() or not content[match.end():].strip():
+            errors.append(f'Invalid starter skill metadata/body: {path.relative_to(root)}')
+    return errors
+
+
 def check(integrity=False):
     errors = []
     required = [
@@ -25,14 +39,7 @@ def check(integrity=False):
     for name in required:
         if not (ROOT / name).is_file() or not (ROOT / name).stat().st_size:
             errors.append(f'Missing or empty: {name}')
-    paths = list((ROOT / '.agents/skills').glob('*/SKILL.md'))
-    if {p.parent.name for p in paths} != SKILLS:
-        errors.append('Expected exactly six named Fleet skills')
-    for path in paths:
-        content = path.read_text(encoding='utf-8')
-        match = re.match(r'^---\nname: ([a-z0-9-]+)\ndescription: ([^\n]+)\n---\n', content)
-        if not match or match[1] != path.parent.name or not content[match.end():].strip():
-            errors.append(f'Invalid starter skill metadata/body: {path.relative_to(ROOT)}')
+    errors.extend(check_skills(ROOT))
     try:
         config = tomllib.loads((ROOT / '.codex/config.toml').read_text(encoding='utf-8'))
         if config.get('sandbox_mode') != 'workspace-write' or config.get('approval_policy') != 'on-request':
@@ -73,7 +80,7 @@ def check(integrity=False):
         for error in errors:
             print(f'FAIL: {error}', file=sys.stderr)
         return 1
-    print('PASS: starter structure, six skills, TOML and local Markdown links')
+    print('PASS: starter structure, required Fleet skills, all skill metadata, TOML and local Markdown links')
     if integrity:
         print('PASS: all listed original file hashes')
     return 0

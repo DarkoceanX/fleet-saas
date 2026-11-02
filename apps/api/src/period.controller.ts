@@ -22,6 +22,13 @@ export class PeriodController {
   ) {
     return this.period.report(r.user, v, q);
   }
+  @Get("entries") entries(
+    @Req() r: AuthedRequest,
+    @Param("vehicleId") v: string,
+    @Query() q: unknown,
+  ) {
+    return this.period.entries(r.user, v, q);
+  }
   @Post("ownership") ownership(
     @Req() r: AuthedRequest,
     @Param("vehicleId") v: string,

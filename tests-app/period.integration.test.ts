@@ -732,6 +732,232 @@ test("vehicle periods: isolated PostgreSQL, HTTP, sources, tenancy and correctio
         assert.equal((await get()).report.costs_reviewed, false);
       },
     );
+    await t.test(
+      "paged period HTTP preserves full aggregates, stable boundaries, roles and revisions",
+      async () => {
+        const v = await createVehicle(a, "PAGED"),
+          p = `/vehicles/${v}/period`;
+        assert.equal(
+          (
+            await raw(
+              p + "/ownership",
+              "POST",
+              { ownership: "owned", version: 0 },
+              a,
+            )
+          ).status,
+          201,
+        );
+        const ids: string[] = [],
+          incomeIds: string[] = [];
+        for (let i = 0; i < 5; i++) {
+          const cost = await raw(
+            p + "/costs",
+            "POST",
+            manual(String(i + 1)),
+            a,
+          );
+          assert.equal(cost.status, 201);
+          ids.push(cost.data.id as string);
+          const income = await raw(
+            "/income",
+            "POST",
+            {
+              vehicle_id: v,
+              trip_id: null,
+              recognized_on: "2026-09-15",
+              amount: "10",
+              currency: "RUB",
+              source_ref: `PAGE-${i}`,
+              note: "Synthetic income",
+            },
+            a,
+          );
+          assert.equal(income.status, 201);
+          incomeIds.push(income.data.id as string);
+        }
+        const full = (await raw(p + range, "GET", undefined, a))
+          .data as unknown as {
+          report: {
+            entries: { id: string }[];
+            revision: number;
+            total_cost: string;
+            costs_reviewed: boolean;
+          };
+          income: {
+            entries: { id: string }[];
+            summary: Record<string, unknown>;
+          };
+        };
+        const rev = full.report.revision;
+        assert.equal(
+          (await raw(p + "/review", "POST", reviewBody(rev), a)).status,
+          201,
+        );
+        assert.equal(
+          (
+            await raw(
+              p + "/income-review",
+              "POST",
+              {
+                start_date: "2026-09-01",
+                end_date: "2026-09-30",
+                expected_revision: rev,
+                status: "confirmed",
+                reason: "All checked",
+              },
+              a,
+            )
+          ).status,
+          201,
+        );
+        const paged = (
+          await raw(p + range + "&page_size=2", "GET", undefined, a)
+        ).data as unknown as typeof full & {
+          pages: {
+            costs: { next_offset: number };
+            income: { next_offset: number };
+          };
+        };
+        assert.equal(paged.report.total_cost, "15.00");
+        assert.equal(paged.report.costs_reviewed, true);
+        assert.equal(paged.income.summary.actual_revenue, "50.00");
+        assert.equal(paged.income.summary.financial_result, "35.00");
+        assert.equal(paged.income.summary.financial_result_reviewed, true);
+        assert.equal(paged.report.entries.length, 2);
+        assert.equal(paged.income.entries.length, 2);
+        const pagePath = (kind: string, offset: number) =>
+          p +
+          `/entries${range}&kind=${kind}&limit=2&offset=${offset}&expected_revision=${rev}`;
+        for (const [kind, expected] of [
+          ["costs", ids],
+          ["income", incomeIds],
+        ] as const) {
+          const seen: string[] = [];
+          let offset: number | null = 0;
+          while (offset !== null) {
+            const result = await raw(
+              pagePath(kind, offset),
+              "GET",
+              undefined,
+              a,
+            );
+            assert.equal(result.status, 200);
+            const page = result.data as unknown as {
+              items: { id: string }[];
+              next_offset: number | null;
+              total: number;
+              revision: number;
+            };
+            seen.push(...page.items.map((e) => e.id));
+            offset = page.next_offset;
+            assert.equal(page.total, 5);
+            assert.equal(page.revision, rev);
+          }
+          assert.deepEqual(seen, [...expected].sort());
+          assert.equal(
+            (await raw(pagePath(kind, 5), "GET", undefined, a)).data
+              .next_offset,
+            null,
+          );
+          assert.deepEqual(
+            (await raw(pagePath(kind, 5), "GET", undefined, a)).data.items,
+            [],
+          );
+          assert.equal((await raw(pagePath(kind, 0))).status, 401);
+          for (const cookie of [viewer, dispatcher])
+            assert.equal(
+              (await raw(pagePath(kind, 0), "GET", undefined, cookie)).status,
+              403,
+            );
+          assert.equal(
+            (await raw(pagePath(kind, 0), "GET", undefined, accountant)).status,
+            200,
+          );
+          assert.equal(
+            (await raw(pagePath(kind, 0), "GET", undefined, b)).status,
+            404,
+          );
+        }
+        for (const suffix of [
+          "&limit=0",
+          "&offset=-1",
+          "&kind=unknown",
+          "&tenant_id=foreign",
+        ]) {
+          assert.equal(
+            (await raw(pagePath("costs", 0) + suffix, "GET", undefined, a))
+              .status,
+            400,
+          );
+        }
+        const selected = ids.at(-1)!;
+        const trip = await raw(
+          "/trips",
+          "POST",
+          {
+            vehicle_id: v,
+            origin: "Synthetic A",
+            destination: "Synthetic B",
+            departure_date: "2026-09-15",
+          },
+          a,
+        );
+        const expense = await raw(
+          `/trips/${trip.data.id}/expenses`,
+          "POST",
+          {
+            category: "fuel",
+            amount: "5",
+            currency: "RUB",
+            incurred_on: "2026-09-15",
+            note: "Same synthetic receipt",
+          },
+          a,
+        );
+        assert.equal(expense.status, 201);
+        assert.equal(
+          (await raw(pagePath("costs", 2), "GET", undefined, a)).status,
+          409,
+        );
+        assert.equal(
+          (await raw(pagePath("income", 2), "GET", undefined, a)).status,
+          409,
+        );
+        const body = {
+          expense_id: expense.data.id,
+          expense_version: 1,
+          category: "fuel",
+          note: "Replace selected manual source",
+          replace_entry_id: selected,
+          replace_version: 1,
+        };
+        const key = randomUUID();
+        assert.equal(
+          (await raw(p + "/recognize", "POST", body, a, key)).status,
+          201,
+        );
+        assert.equal(
+          (await raw(p + "/recognize", "POST", body, a, key)).status,
+          201,
+        );
+        const refreshed = (
+          await raw(p + range + "&page_size=2", "GET", undefined, a)
+        ).data as unknown as typeof paged;
+        assert.equal(refreshed.report.total_cost, "15.00");
+        assert.equal(refreshed.report.costs_reviewed, false);
+        assert.equal(refreshed.income.summary.financial_result_reviewed, false);
+        assert.equal(
+          (
+            await pool.query(
+              "SELECT count(*)::int n FROM vehicle_cost_entries WHERE tenant_id=$1 AND vehicle_id=$2 AND trip_expense_id=$3",
+              [tenant, v, expense.data.id],
+            )
+          ).rows[0].n,
+          1,
+        );
+      },
+    );
   } finally {
     await app.close();
     await pool.end();

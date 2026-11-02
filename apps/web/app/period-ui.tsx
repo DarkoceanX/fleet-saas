@@ -9,8 +9,11 @@ import {
   type PeriodReading,
   type PeriodReport,
   type ReviewState,
+  type IncomeEntry,
+  type PeriodPage,
+  type PeriodPageInfo,
 } from "@fleet/shared";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { IncomePanel } from "./income-ui";
 import type { IncomeWorkspace } from "@fleet/shared";
 type Source = {
@@ -23,6 +26,7 @@ type Source = {
   trip_id: string;
 };
 export type PeriodWorkspace = {
+  pages?: { costs: PeriodPageInfo; income: PeriodPageInfo };
   income: IncomeWorkspace;
   profile: { ownership: Ownership; version: number } | null;
   readings: PeriodReading[];
@@ -41,6 +45,7 @@ type Editor = {
   key: string;
   fields: Record<string, string>;
   source?: Source;
+  replacement?: PeriodEntry;
 };
 const labels: Record<ReviewState["status"], string> = {
   unreviewed: "Не проверено",
@@ -50,6 +55,9 @@ const labels: Record<ReviewState["status"], string> = {
 };
 const money = (v: string | null) => (v === null ? "не рассчитано" : `${v} RUB`);
 export function PeriodPanel({ vehicleId }: { vehicleId: string }) {
+  return <PeriodPanelContent key={vehicleId} vehicleId={vehicleId} />;
+}
+function PeriodPanelContent({ vehicleId }: { vehicleId: string }) {
   const [start, setStart] = useState(""),
     [end, setEnd] = useState("");
   const [range, setRange] = useState<{
@@ -62,22 +70,44 @@ export function PeriodPanel({ vehicleId }: { vehicleId: string }) {
   const [editor, setEditor] = useState<Editor | null>(null),
     [states, setStates] = useState<ReviewState[]>([]);
   const [ownership, setOwnership] = useState<Ownership>("owned");
+  const [paging, setPaging] = useState({ costs: false, income: false });
+  const [pagesStale, setPagesStale] = useState(false);
+  const pageRequests = useRef({ costs: false, income: false });
+  const pageBlocked = useRef(false);
+  const alive = useRef(true);
   const request = useRef(0),
     retry = useRef<{ body: string; key: string } | null>(null);
   const base = `/vehicles/${vehicleId}/period`;
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
       request.current++;
-    },
-    [],
-  );
+    };
+  }, []);
+  function invalidatePages() {
+    pageBlocked.current = true;
+    request.current++;
+    pageRequests.current = { costs: false, income: false };
+    setPaging({ costs: false, income: false });
+    setPagesStale(true);
+  }
   async function load(selected = range) {
-    if (!selected) return;
-    const token = ++request.current;
-    const result = await api<PeriodWorkspace>(
-      `${base}?${new URLSearchParams(selected)}`,
-    );
-    if (token !== request.current) return;
+    if (!selected || !alive.current) return;
+    invalidatePages();
+    const token = request.current;
+    let result: PeriodWorkspace;
+    try {
+      result = await api<PeriodWorkspace>(
+        `${base}?${new URLSearchParams({ ...selected, page_size: "20" })}`,
+      );
+    } catch (e) {
+      if (alive.current && token === request.current) throw e;
+      return;
+    }
+    if (!alive.current || token !== request.current) return;
+    pageBlocked.current = false;
+    setPagesStale(false);
     setData(result);
     setOwnership(result.profile?.ownership ?? "owned");
     setStates(
@@ -88,7 +118,69 @@ export function PeriodPanel({ vehicleId }: { vehicleId: string }) {
       })),
     );
   }
+  async function loadMore(kind: "costs" | "income") {
+    const page = data?.pages?.[kind];
+    if (
+      !range ||
+      !page ||
+      page.next_offset === null ||
+      pagesStale ||
+      pageBlocked.current ||
+      busy ||
+      pageRequests.current[kind]
+    )
+      return;
+    const token = request.current;
+    pageRequests.current[kind] = true;
+    setPaging((p) => ({ ...p, [kind]: true }));
+    setError("");
+    try {
+      const next = await api<PeriodPage<PeriodEntry | IncomeEntry>>(
+        `${base}/entries?${new URLSearchParams({ ...range, kind, limit: "20", offset: String(page.next_offset), expected_revision: String(page.revision) })}`,
+      );
+      if (!alive.current || token !== request.current) return;
+      setData((current) => {
+        if (!current?.pages || current.report.revision !== next.revision)
+          return current;
+        const { items, ...info } = next;
+        return {
+          ...current,
+          pages: { ...current.pages, [kind]: info },
+          ...(kind === "costs"
+            ? {
+                report: {
+                  ...current.report,
+                  entries: [
+                    ...current.report.entries,
+                    ...(items as PeriodEntry[]),
+                  ],
+                },
+              }
+            : {
+                income: {
+                  ...current.income,
+                  entries: [
+                    ...current.income.entries,
+                    ...(items as IncomeEntry[]),
+                  ],
+                },
+              }),
+        };
+      });
+    } catch (e) {
+      if (alive.current && token === request.current) {
+        setError((e as Error).message);
+        if (e instanceof ApiError && e.status === 409) invalidatePages();
+      }
+    } finally {
+      if (alive.current && token === request.current) {
+        pageRequests.current[kind] = false;
+        setPaging((p) => ({ ...p, [kind]: false }));
+      }
+    }
+  }
   async function mutate(path: string, payload: unknown, explicitKey?: string) {
+    invalidatePages();
     const body = JSON.stringify(payload),
       fingerprint = `${path}:${body}`;
     if (!retry.current || retry.current.body !== fingerprint)
@@ -106,9 +198,9 @@ export function PeriodPanel({ vehicleId }: { vehicleId: string }) {
     try {
       await fn();
     } catch (e) {
-      setError((e as Error).message);
+      if (alive.current) setError((e as Error).message);
     } finally {
-      setBusy(false);
+      if (alive.current) setBusy(false);
     }
   }
   function add(kind: "reading" | "cost") {
@@ -174,6 +266,7 @@ export function PeriodPanel({ vehicleId }: { vehicleId: string }) {
       id: entry?.id ?? null,
       version: entry?.version ?? 0,
       source: s,
+      replacement: entry,
       key: crypto.randomUUID(),
       fields: {
         category: entry?.category ?? "",
@@ -194,7 +287,11 @@ export function PeriodPanel({ vehicleId }: { vehicleId: string }) {
           );
         const replaceId =
           f.replace_entry_id === "none" ? null : f.replace_entry_id;
-        const replace = data?.report.entries.find((r) => r.id === replaceId);
+        const replace =
+          (editor.replacement?.id === replaceId
+            ? editor.replacement
+            : undefined) ??
+          data?.report.entries.find((r) => r.id === replaceId);
         if (replaceId && !replace)
           throw new Error("Запись для замены недоступна. Обновите период");
         await mutate(
@@ -242,10 +339,22 @@ export function PeriodPanel({ vehicleId }: { vehicleId: string }) {
       setEditor({
         ...editor,
         fields: { ...editor.fields, [key]: value },
+        ...(key === "replace_entry_id"
+          ? { replacement: data?.report.entries.find((r) => r.id === value) }
+          : {}),
         key: crypto.randomUUID(),
       });
   }
   const categories = data?.report.breakdown ?? [];
+  const replacements =
+    data?.report.entries.filter(
+      (r) => r.source === "manual" || r.id === editor?.id,
+    ) ?? [];
+  if (
+    editor?.replacement &&
+    !replacements.some((r) => r.id === editor.replacement!.id)
+  )
+    replacements.push(editor.replacement);
   return (
     <section aria-label="Эксплуатация техники" className="panel">
       <h2>Техника → Период → Себестоимость и результат</h2>
@@ -295,6 +404,21 @@ export function PeriodPanel({ vehicleId }: { vehicleId: string }) {
           {error}
         </p>
       )}
+      {data && pagesStale && (
+        <p role="status">
+          Для продолжения загрузки обновите отчёт. Введённые данные формы
+          сохранены.
+        </p>
+      )}
+      {data && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void perform(() => load())}
+        >
+          Обновить отчёт периода
+        </button>
+      )}
       {data && (
         <>
           <IncomePanel
@@ -303,6 +427,17 @@ export function PeriodPanel({ vehicleId }: { vehicleId: string }) {
             vehicleId={vehicleId}
             range={range ?? undefined}
             onChange={() => load()}
+            onMutationStart={invalidatePages}
+            pagination={
+              data.pages
+                ? {
+                    total: data.pages.income.total,
+                    more: data.pages.income.next_offset !== null,
+                    busy: paging.income || pagesStale || busy,
+                    load: () => loadMore("income"),
+                  }
+                : undefined
+            }
           />
           <form
             onSubmit={(e) => {
@@ -460,7 +595,7 @@ export function PeriodPanel({ vehicleId }: { vehicleId: string }) {
               </thead>
               <tbody>
                 {data.report.entries.map((r) => (
-                  <tr key={r.id}>
+                  <tr key={r.id} data-testid="period-cost-row">
                     <td>{r.date}</td>
                     <td>
                       {periodCategories[r.category]}
@@ -534,6 +669,21 @@ export function PeriodPanel({ vehicleId }: { vehicleId: string }) {
               </tbody>
             </table>
           </div>
+          {data.pages && (
+            <p>
+              Показано расходов: {data.report.entries.length} из{" "}
+              {data.pages.costs.total}. Итоги и полнота — за весь период.
+            </p>
+          )}
+          {data.pages?.costs.next_offset != null && (
+            <button
+              type="button"
+              disabled={busy || paging.costs || pagesStale}
+              onClick={() => void loadMore("costs")}
+            >
+              Загрузить ещё расходы
+            </button>
+          )}
           {data.pending_sources.length > 0 && (
             <>
               <h3>Непризнанные расходы рейсов этой машины</h3>
@@ -681,18 +831,22 @@ export function PeriodPanel({ vehicleId }: { vehicleId: string }) {
                           <option value="none">
                             Нет — сумма ещё не внесена вручную
                           </option>
-                          {data.report.entries
-                            .filter(
-                              (r) =>
-                                r.source === "manual" || r.id === editor.id,
-                            )
-                            .map((r) => (
-                              <option key={r.id} value={r.id}>
-                                {r.date} · {r.amount} · {r.note}
-                              </option>
-                            ))}
+                          {replacements.map((r) => (
+                            <option key={r.id} value={r.id}>
+                              {r.date} · {r.amount} · {r.note}
+                            </option>
+                          ))}
                         </select>
                       </label>
+                      {data.pages?.costs.next_offset != null && (
+                        <button
+                          type="button"
+                          disabled={paging.costs || pagesStale}
+                          onClick={() => void loadMore("costs")}
+                        >
+                          Загрузить ещё записи для замены
+                        </button>
+                      )}
                     </>
                   )}
                 </div>

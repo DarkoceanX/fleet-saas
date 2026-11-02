@@ -15,6 +15,9 @@ import {
   nextDay,
   ownershipSchema,
   periodRangeSchema,
+  periodReportQuerySchema,
+  periodEntriesQuerySchema,
+  periodPage,
   readingSchema,
   readingUpdateSchema,
   recognizeSchema,
@@ -481,10 +484,53 @@ export class PeriodService {
   }
   async report(user: UserContext, vehicleId: string, query: unknown) {
     requireRole(user, ["owner", "accountant"]);
-    const range = periodRangeSchema.parse(query);
+    const { page_size, ...range } = periodReportQuerySchema.parse(query);
     return this.db.transaction(async (c) => {
       const vehicle = await this.lock(c, user, vehicleId);
-      return { vehicle, ...(await this.data(c, user, vehicleId, range)) };
+      const data = await this.data(c, user, vehicleId, range);
+      if (page_size === undefined) return { vehicle, ...data };
+      const { items: costs, ...costPage } = periodPage(
+        data.report.entries,
+        page_size,
+        0,
+        data.report.revision,
+      );
+      const { items: income, ...incomePage } = periodPage(
+        data.income.entries,
+        page_size,
+        0,
+        data.report.revision,
+      );
+      return {
+        vehicle,
+        ...data,
+        report: { ...data.report, entries: costs },
+        income: { ...data.income, entries: income },
+        pages: { costs: costPage, income: incomePage },
+      };
+    });
+  }
+  async entries(user: UserContext, vehicleId: string, query: unknown) {
+    requireRole(user, ["owner", "accountant"]);
+    const { kind, limit, offset, expected_revision, ...range } =
+      periodEntriesQuerySchema.parse(query);
+    return this.db.transaction(async (c) => {
+      await this.lock(c, user, vehicleId);
+      const revision =
+        (
+          await c.query(
+            "SELECT revision FROM vehicle_period_revisions WHERE tenant_id=$1",
+            [user.tenant_id],
+          )
+        ).rows[0]?.revision ?? 0;
+      if (revision !== expected_revision)
+        throw new ConflictException(
+          "Данные периода изменились. Обновите отчёт перед загрузкой страниц",
+        );
+      const data = await this.data(c, user, vehicleId, range);
+      return kind === "costs"
+        ? periodPage(data.report.entries, limit, offset, revision)
+        : periodPage(data.income.entries, limit, offset, revision);
     });
   }
   async review(
